@@ -1,0 +1,214 @@
+//@version=6
+indicator("ICT Kill Zones - Extended", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=200)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SETTINGS
+// ═══════════════════════════════════════════════════════════════════════════
+
+showLondonKZ = input.bool(true, "Show London Open KZ", group="🎯 Kill Zones")
+showNYAM_KZ = input.bool(true, "Show NY AM KZ ⭐", group="🎯 Kill Zones")
+showLonCloseKZ = input.bool(true, "Show London Close KZ", group="🎯 Kill Zones")
+showNYLunch_KZ = input.bool(true, "Show NY Lunch", group="🎯 Kill Zones")
+showNYPM_KZ = input.bool(true, "Show NY PM KZ", group="🎯 Kill Zones")
+kzDaysBack = input.int(5, "Session Drawing Limit", minval=1, maxval=20, group="🎯 Kill Zones")
+
+showKZHighLow = input.bool(true, "Show KZ High/Low Lines", group="📈 KZ Levels")
+showKZBrokenAsDashed = input.bool(true, "Show Broken Part as Dashed", group="📈 KZ Levels")
+hideKZBrokenPart = input.bool(false, "Hide Broken Part Completely", group="📈 KZ Levels")
+kzBrokenLineStyle = input.string("Dashed", "Broken Line Style", options=["Solid", "Dotted", "Dashed"], group="📈 KZ Levels")
+showKZPriceOnLabel = input.bool(true, "Show Price on Labels", group="📈 KZ Levels")
+kzLabelOffsetBars = input.int(5, "Label Offset (bars)", minval=0, maxval=50, group="📈 KZ Levels")
+
+// Colors
+londonKZName = input.string("London Open", "Name", inline="LKZ", group="🎨 London Open KZ")
+londonKZColor = input.color(color.new(#2196F3, 92), "Box", inline="LKZ", group="🎨 London Open KZ")
+londonKZLineColor = input.color(#2196F3, "Line", inline="LKZ", group="🎨 London Open KZ")
+
+nyamKZName = input.string("NY AM ⭐", "Name", inline="NYAM", group="🎨 NY AM KZ")
+nyamKZColor = input.color(color.new(#00C853, 92), "Box", inline="NYAM", group="🎨 NY AM KZ")
+nyamKZLineColor = input.color(#00C853, "Line", inline="NYAM", group="🎨 NY AM KZ")
+
+lonCloseKZName = input.string("London Close", "Name", inline="LCKZ", group="🎨 London Close KZ")
+lonCloseKZColor = input.color(color.new(#f44336, 92), "Box", inline="LCKZ", group="🎨 London Close KZ")
+lonCloseKZLineColor = input.color(#f44336, "Line", inline="LCKZ", group="🎨 London Close KZ")
+
+lunchKZName = input.string("NY Lunch", "Name", inline="LUNCH", group="🎨 NY Lunch")
+lunchKZColor = input.color(color.new(#FF9800, 92), "Box", inline="LUNCH", group="🎨 NY Lunch")
+lunchKZLineColor = input.color(#FF9800, "Line", inline="LUNCH", group="🎨 NY Lunch")
+
+nypmKZName = input.string("NY PM", "Name", inline="NYPM", group="🎨 NY PM KZ")
+nypmKZColor = input.color(color.new(#9C27B0, 92), "Box", inline="NYPM", group="🎨 NY PM KZ")
+nypmKZLineColor = input.color(#9C27B0, "Line", inline="NYPM", group="🎨 NY PM KZ")
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TYPE & ARRAYS
+// ═══════════════════════════════════════════════════════════════════════════
+
+type KZData
+    box kzBox
+    line highLineSolid
+    line lowLineSolid
+    line highLineBroken
+    line lowLineBroken
+    label highLabel
+    label lowLabel
+    float highPrice
+    float lowPrice
+    int startBar
+    int endBar
+    int highBreakBar
+    int lowBreakBar
+    bool highBroken
+    bool lowBroken
+    int dayNumber
+
+var array<KZData> londonKZs = array.new<KZData>()
+var array<KZData> nyamKZs = array.new<KZData>()
+var array<KZData> lonCloseKZs = array.new<KZData>()
+var array<KZData> lunchKZs = array.new<KZData>()
+var array<KZData> nypmKZs = array.new<KZData>()
+
+var int currentKZDay = 0
+// Исправленная проверка смены дня для v6
+if not na(ta.change(time("D", "America/New_York")))
+    currentKZDay += 1
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════════════════════
+
+isSession(sess) => not na(time(timeframe.period, sess, "America/New_York"))
+
+getLineStyle(styleStr) =>
+    styleStr == "Dotted" ? line.style_dotted : styleStr == "Dashed" ? line.style_dashed : line.style_solid
+
+deleteOldest(array<KZData> kzs) =>
+    if array.size(kzs) > 0
+        old = array.shift(kzs)
+        box.delete(old.kzBox), line.delete(old.highLineSolid), line.delete(old.lowLineSolid)
+        line.delete(old.highLineBroken), line.delete(old.lowLineBroken)
+        label.delete(old.highLabel), label.delete(old.lowLabel)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// LOGIC
+// ═══════════════════════════════════════════════════════════════════════════
+
+processKZ(bool show, string sess, string name, color bgCol, color lineCol, array<KZData> arr, float kHigh, float kLow, int kStart) =>
+    bool inSess = isSession(sess)
+    float h = kHigh
+    float l = kLow
+    int s = kStart
+
+    if inSess and not inSess[1]
+        // Удаляем старую сессию ТОЛЬКО при открытии новой того же типа
+        if show and array.size(arr) >= kzDaysBack
+            deleteOldest(arr)
+        h := high
+        l := low
+        s := bar_index
+    else if inSess
+        h := math.max(h, high)
+        l := math.min(l, low)
+
+    if show and not inSess and inSess[1]
+        // bar_index - 1 фиксирует конец зоны на ПРЕДЫДУЩЕМ баре (ровно в 16:00 для M15)
+        endB = bar_index - 1
+        kzBox = box.new(s, h, endB, l, border_color=lineCol, bgcolor=bgCol, border_width=1, text=name, text_color=lineCol, text_size=size.normal, text_halign=text.align_center, text_valign=text.align_center)
+        highLnSolid = line(na), lowLnSolid = line(na), highLnBroken = line(na), lowLnBroken = line(na), highLbl = label(na), lowLbl = label(na)
+
+        if showKZHighLow
+            highLnSolid := line.new(endB, h, endB, h, color=lineCol, width=2, style=line.style_solid)
+            lowLnSolid := line.new(endB, l, endB, l, color=lineCol, width=2, style=line.style_solid)
+            labelX = endB + kzLabelOffsetBars
+            pStrH = showKZPriceOnLabel ? " " + str.tostring(h, "#.####") : ""
+            pStrL = showKZPriceOnLabel ? " " + str.tostring(l, "#.####") : ""
+            highLbl := label.new(labelX, h, name + " H" + pStrH, style=label.style_label_left, color=lineCol, textcolor=color.white, size=size.small)
+            lowLbl := label.new(labelX, l, name + " L" + pStrL, style=label.style_label_left, color=lineCol, textcolor=color.white, size=size.small)
+
+        array.push(arr, KZData.new(kzBox, highLnSolid, lowLnSolid, highLnBroken, lowLnBroken, highLbl, lowLbl, h, l, s, endB, na, na, false, false, currentKZDay))
+    [h, l, s]
+
+// Инициализация состояний
+var float lnH = na, var float lnL = na, var int lnS = na
+var float nyH = na, var float nyL = na, var int nyS = na
+var float lcH = na, var float lcL = na, var int lcS = na
+var float luH = na, var float luL = na, var int luS = na
+var float pmH = na, var float pmL = na, var int pmS = na
+
+[h1, l1, s1] = processKZ(showLondonKZ, "0200-0500:23456", londonKZName, londonKZColor, londonKZLineColor, londonKZs, lnH, lnL, lnS)
+lnH := h1, lnL := l1, lnS := s1
+
+[h2, l2, s2] = processKZ(showNYAM_KZ, "0800-1100:23456", nyamKZName, nyamKZColor, nyamKZLineColor, nyamKZs, nyH, nyL, nyS)
+nyH := h2, nyL := l2, nyS := s2
+
+[h3, l3, s3] = processKZ(showLonCloseKZ, "1000-1200:23456", lonCloseKZName, lonCloseKZColor, lonCloseKZLineColor, lonCloseKZs, lcH, lcL, lcS)
+lcH := h3, lcL := l3, lcS := s3
+
+[h4, l4, s4] = processKZ(showNYLunch_KZ, "1130-1300:23456", lunchKZName, lunchKZColor, lunchKZLineColor, lunchKZs, luH, luL, luS)
+luH := h4, luL := l4, luS := s4
+
+[h5, l5, s5] = processKZ(showNYPM_KZ, "1300-1600:23456", nypmKZName, nypmKZColor, nypmKZLineColor, nypmKZs, pmH, pmL, pmS)
+pmH := h5, pmL := l5, pmS := s5
+
+// ═══════════════════════════════════════════════════════════════════════════
+// UPDATE LINES
+// ═══════════════════════════════════════════════════════════════════════════
+
+updateKZLines(array<KZData> kzs, col) =>
+    if showKZHighLow and array.size(kzs) > 0
+        for i = 0 to array.size(kzs) - 1
+            kz = array.get(kzs, i)
+            if not kz.highBroken and (high > kz.highPrice or low < kz.highPrice)
+                if low <= kz.highPrice and high >= kz.highPrice
+                    kz.highBroken := true, kz.highBreakBar := bar_index
+            if not kz.lowBroken and (high > kz.lowPrice or low < kz.lowPrice)
+                if low <= kz.lowPrice and high >= kz.lowPrice
+                    kz.lowBroken := true, kz.lowBreakBar := bar_index
+
+            if not kz.highBroken
+                line.set_x2(kz.highLineSolid, bar_index)
+                if not na(kz.highLabel)
+                    label.set_x(kz.highLabel, bar_index + kzLabelOffsetBars)
+            else
+                if hideKZBrokenPart
+                    line.set_x2(kz.highLineSolid, kz.highBreakBar)
+                    if not na(kz.highLabel)
+                        label.set_x(kz.highLabel, kz.highBreakBar), label.set_style(kz.highLabel, label.style_label_down)
+                else
+                    if showKZBrokenAsDashed
+                        line.set_x2(kz.highLineSolid, kz.highBreakBar)
+                        if na(kz.highLineBroken)
+                            kz.highLineBroken := line.new(kz.highBreakBar, kz.highPrice, bar_index, kz.highPrice, color=col, width=2, style=getLineStyle(kzBrokenLineStyle))
+                        else
+                            line.set_x2(kz.highLineBroken, bar_index)
+                    else
+                        line.set_x2(kz.highLineSolid, bar_index)
+                    if not na(kz.highLabel)
+                        label.set_x(kz.highLabel, bar_index + kzLabelOffsetBars)
+
+            if not kz.lowBroken
+                line.set_x2(kz.lowLineSolid, bar_index)
+                if not na(kz.lowLabel)
+                    label.set_x(kz.lowLabel, bar_index + kzLabelOffsetBars)
+            else
+                if hideKZBrokenPart
+                    line.set_x2(kz.lowLineSolid, kz.lowBreakBar)
+                    if not na(kz.lowLabel)
+                        label.set_x(kz.lowLabel, kz.lowBreakBar), label.set_style(kz.lowLabel, label.style_label_up)
+                else
+                    if showKZBrokenAsDashed
+                        line.set_x2(kz.lowLineSolid, kz.lowBreakBar)
+                        if na(kz.lowLineBroken)
+                            kz.lowLineBroken := line.new(kz.lowBreakBar, kz.lowPrice, bar_index, kz.lowPrice, color=col, width=2, style=getLineStyle(kzBrokenLineStyle))
+                        else
+                            line.set_x2(kz.lowLineBroken, bar_index)
+                    else
+                        line.set_x2(kz.lowLineSolid, bar_index)
+                    if not na(kz.lowLabel)
+                        label.set_x(kz.lowLabel, bar_index + kzLabelOffsetBars)
+
+updateKZLines(londonKZs, londonKZLineColor)
+updateKZLines(nyamKZs, nyamKZLineColor)
+updateKZLines(lonCloseKZs, lonCloseKZLineColor)
+updateKZLines(lunchKZs, lunchKZLineColor)
+updateKZLines(nypmKZs, nypmKZLineColor)
